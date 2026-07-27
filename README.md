@@ -986,7 +986,7 @@ int miniregex_match(const char *pattern, size_t pattern_len,
 code elk.h
 ```
 
-ElkでJavaScriptをするために以下の内容を書きます。
+ElkでJavaScriptを動かすために以下の内容を書きます。
 
 ```c
 // Copyright (c) 2013-2022 Cesanta Software Limited
