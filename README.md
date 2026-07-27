@@ -73,13 +73,23 @@ code --version
 command -v xxd
 ```
 
+たとえば、このような表示になればokです。
+```text
+Homebrew 6.0.12-140-g15b4330
+git version 2.50.1 (Apple Git-155)
+1.129.1
+8a7abeba6e03ea3af87bfbce9a1b7e48fed567b8
+arm64
+/usr/bin/xxd
+```
+
 LLVMとQEMUが未導入の場合は、次を実行します。
 
 ```bash
 brew install llvm qemu
 ```
 
-`xxd` が見つからない場合は、Vimを導入します。
+`xxd` が見つからない場合は、vimを導入します。
 
 ```bash
 brew install vim
