@@ -1,16 +1,16 @@
 # 91os
 
-RISC-Vの独自OSの上で小型JavaScript処理系を動かし、そのJavaScript上で独自言語Gengoを実行する学習用プロジェクトです。
+この演習は、RISC-Vの独自OSの上で小型JavaScript処理系を動かし、そのJavaScript上で独自言語Gengoを実行する学習用プロジェクトです。
 
-最初はC言語の `printf` だけが動く小さなカーネルを作ります。その後、Elk、Gengo処理系、起動スクリプト、REPLの機能を段階的に追加します。
+最初はC言語の `printf` だけが動く小さなカーネルを作ります。その後、ElkというJavaScript処理系、自作したGengo処理系、起動スクリプト、REPLの機能を段階的に追加します。
 
-完成版ソースコードはこちらで公開しています。
+完成版のソースコードはこちらで公開しています。
 
 [https://github.com/takesako/91os](https://github.com/takesako/91os)
 
 ## このプロジェクトで作るもの
 
-最終的な実行環境は、次の層で構成されます。
+最終的な実行環境は、次の通りです。
 
 ```mermaid
 flowchart TD
@@ -73,23 +73,13 @@ code --version
 command -v xxd
 ```
 
-たとえば、このような表示になればokです。
-```text
-Homebrew 6.0.12-140-g15b4330
-git version 2.50.1 (Apple Git-155)
-1.129.1
-8a7abeba6e03ea3af87bfbce9a1b7e48fed567b8
-arm64
-/usr/bin/xxd
-```
-
 LLVMとQEMUが未導入の場合は、次を実行します。
 
 ```bash
 brew install llvm qemu
 ```
 
-`xxd` が見つからない場合は、vimを導入します。
+`xxd` が見つからない場合は、Vimを導入します。
 
 ```bash
 brew install vim
@@ -365,24 +355,570 @@ void main(void) {
 
 ```bash
 git add .
-git commit -m "step1: print text on minimal os"
+git commit -m "step1: print my os"
 ```
 
 ## 演習2 Cライブラリを完成版へ置き換える
 
 Elkを動かすには、メモリ操作、文字列操作、数値変換、ヒープ管理、書式付き出力が必要です。
 
-最小版の `libc.h` と `libc.c` を、リポジトリの完成版へ置き換えます。
-
-- [libc.h](https://github.com/takesako/91os/blob/main/libc.h)
-- [libc.c](https://github.com/takesako/91os/blob/main/libc.c)
+`libc.h` ファイルを作成します。
 
 ```bash
-code libc.h
-code libc.c
+open libc.h
 ```
 
-自作のlibcで実装している標準関数は以下のとおりです。
+必要な関数だけ宣言します。以下の内容を書いてください。
+
+```c
+// Small libc-independent support layer for Elk.
+#ifndef LIBC_H
+#define LIBC_H
+
+typedef unsigned char      uint8_t;
+typedef signed char        int8_t;
+typedef unsigned short     uint16_t;
+typedef signed short       int16_t;
+typedef unsigned int       uint32_t;
+typedef signed int         int32_t;
+typedef unsigned long long uint64_t;
+typedef signed long long   int64_t;
+
+typedef __SIZE_TYPE__      size_t;
+typedef __PTRDIFF_TYPE__   ptrdiff_t;
+typedef __UINTPTR_TYPE__   uintptr_t;
+typedef __INTPTR_TYPE__    intptr_t;
+
+typedef _Bool bool;
+#define true  1
+#define false 0
+
+#ifndef NULL
+#define NULL ((void *) 0)
+#endif
+
+void *memcpy(void *dst, const void *src, size_t len);
+void *memmove(void *dst, const void *src, size_t len);
+void *memset(void *dst, int value, size_t len);
+int memcmp(const void *lhs, const void *rhs, size_t len);
+
+size_t strlen(const char *str);
+char *strchr(const char *str, int ch);
+double strtod(const char *str, char **end);
+double modf(double value, double *integer);
+
+// Supported conversions are those used by elk.c:
+//   %s, %.*s, %d, %u, %lu, %lx, %g, %.17g and %%
+int vsnprintf(char *dst, size_t size, const char *format, __builtin_va_list ap);
+int snprintf(char *dst, size_t size, const char *format, ...);
+void printf(const char *fmt, ...);
+
+// Fixed-arena allocator. The application owns the supplied memory.
+// Calling heap_init again discards all previous allocations.
+void heap_init(void *memory, size_t size);
+void *malloc(size_t size);
+void free(void *ptr);
+size_t heap_available(void);
+
+#endif
+```
+
+実際の関数を中身を書くため、`libc.c` ファイルを作成します。
+
+```bash
+open libc.c
+```
+
+以下のコードを書いてください。長いのでコピペでokです。
+
+```c
+#include "stdio.h"
+#include "libc.h"
+
+#define ELK_ALIGN (sizeof(void *))
+#define ELK_ALIGN_UP(n) (((n) + ELK_ALIGN - 1U) / ELK_ALIGN * ELK_ALIGN)
+
+struct heap_block {
+  size_t size;
+  struct heap_block *next;
+  int free;
+};
+
+static struct heap_block *s_heap;
+
+void *memcpy(void *dst, const void *src, size_t len) {
+  unsigned char *d = (unsigned char *) dst;
+  const unsigned char *s = (const unsigned char *) src;
+  for (size_t i = 0; i < len; i++) d[i] = s[i];
+  return dst;
+}
+
+void *memmove(void *dst, const void *src, size_t len) {
+  unsigned char *d = (unsigned char *) dst;
+  const unsigned char *s = (const unsigned char *) src;
+  if (d < s) {
+    for (size_t i = 0; i < len; i++) d[i] = s[i];
+  } else if (d > s) {
+    while (len > 0) {
+      len--;
+      d[len] = s[len];
+    }
+  }
+  return dst;
+}
+
+void *memset(void *dst, int value, size_t len) {
+  unsigned char *d = (unsigned char *) dst;
+  for (size_t i = 0; i < len; i++) d[i] = (unsigned char) value;
+  return dst;
+}
+
+int memcmp(const void *lhs, const void *rhs, size_t len) {
+  const unsigned char *a = (const unsigned char *) lhs;
+  const unsigned char *b = (const unsigned char *) rhs;
+  for (size_t i = 0; i < len; i++) {
+    if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
+  }
+  return 0;
+}
+
+size_t strlen(const char *str) {
+  size_t len = 0;
+  if (str != NULL) while (str[len] != '\0') len++;
+  return len;
+}
+
+char *strchr(const char *str, int ch) {
+  char wanted = (char) ch;
+  if (str == NULL) return NULL;
+  for (;;) {
+    if (*str == wanted) return (char *) str;
+    if (*str++ == '\0') return NULL;
+  }
+}
+
+static int space(char ch) {
+  return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' ||
+         ch == '\f' || ch == '\v';
+}
+
+static int digit(char ch) {
+  return ch >= '0' && ch <= '9';
+}
+
+static int hex_digit(char ch) {
+  if (ch >= '0' && ch <= '9') return ch - '0';
+  if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+  if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+  return -1;
+}
+
+static double pow10(int exponent) {
+  double result = 1.0, factor = exponent < 0 ? 0.1 : 10.0;
+  unsigned int count =
+      (unsigned int) (exponent < 0 ? -(exponent + 1) + 1 : exponent);
+  while (count > 0) {
+    if (count & 1U) result *= factor;
+    factor *= factor;
+    count >>= 1U;
+  }
+  return result;
+}
+
+double strtod(const char *str, char **end) {
+  const char *start = str;
+  while (space(*str)) str++;
+  int negative = 0;
+  if (*str == '+' || *str == '-') negative = *str++ == '-';
+
+  if (str[0] == '0' && (str[1] == 'x' || str[1] == 'X') &&
+      hex_digit(str[2]) >= 0) {
+    unsigned long long hex = 0;
+    str += 2;
+    int digit = 0;
+    while ((digit = hex_digit(*str)) >= 0) {
+      hex = hex * 16ULL + (unsigned int) digit;
+      str++;
+    }
+    if (end != NULL) *end = (char *) str;
+    double value = (double) hex;
+    return negative ? -value : value;
+  }
+
+  double value = 0.0;
+  int digits = 0;
+  while (digit(*str)) {
+    value = value * 10.0 + (double) (*str++ - '0');
+    digits++;
+  }
+  if (*str == '.') {
+    double place = 0.1;
+    str++;
+    while (digit(*str)) {
+      value += (double) (*str++ - '0') * place;
+      place *= 0.1;
+      digits++;
+    }
+  }
+
+  const char *exponent_start = str;
+  int exponent = 0, exponent_negative = 0, exponent_digits = 0;
+  if (digits > 0 && (*str == 'e' || *str == 'E')) {
+    str++;
+    if (*str == '+' || *str == '-') exponent_negative = *str++ == '-';
+    while (digit(*str)) {
+      if (exponent < 10000) exponent = exponent * 10 + (*str - '0');
+      str++;
+      exponent_digits++;
+    }
+    if (exponent_digits == 0) str = exponent_start;
+  }
+
+  if (digits == 0) {
+    str = start;
+    value = 0.0;
+  } else if (exponent_digits > 0) {
+    value *= pow10(exponent_negative ? -exponent : exponent);
+  }
+  if (end != NULL) *end = (char *) str;
+  return negative ? -value : value;
+}
+
+double modf(double value, double *integer) {
+  union {
+    double d;
+    unsigned long long u;
+  } x = {value};
+  unsigned int exponent = (unsigned int) ((x.u >> 52U) & 0x7ffU);
+  unsigned long long sign = x.u & 0x8000000000000000ULL;
+
+  if (exponent == 0x7ffU) {
+    *integer = value;
+    return exponent && (x.u & 0xfffffffffffffULL) ? value
+                                                   : (union { unsigned long long u; double d; }) {sign}.d;
+  }
+
+  int shift = (int) exponent - 1023;
+  if (shift < 0) {
+    *integer = (union { unsigned long long u; double d; }) {sign}.d;
+    return value;
+  }
+  if (shift >= 52) {
+    *integer = value;
+    return (union { unsigned long long u; double d; }) {sign}.d;
+  }
+
+  unsigned long long mask = (1ULL << (52 - shift)) - 1ULL;
+  if ((x.u & mask) == 0) {
+    *integer = value;
+    return (union { unsigned long long u; double d; }) {sign}.d;
+  }
+
+  x.u &= ~mask;
+  *integer = x.d;
+  return value - x.d;
+}
+
+struct output {
+  char *dst;
+  size_t size;
+  size_t used;
+};
+
+static void out_char(struct output *out, char ch) {
+  if (out->size > 0 && out->used + 1U < out->size) out->dst[out->used] = ch;
+  out->used++;
+}
+
+static void out_data(struct output *out, const char *str, size_t len) {
+  for (size_t i = 0; i < len; i++) out_char(out, str[i]);
+}
+
+static void out_unsigned(struct output *out,
+                             unsigned long long value,
+                             unsigned int base) {
+  char reversed[sizeof(value) * 8U];
+  size_t len = 0;
+  do {
+    unsigned int digit = (unsigned int) (value % base);
+    reversed[len++] = (char) (digit < 10U ? '0' + digit : 'a' + digit - 10U);
+    value /= base;
+  } while (value != 0);
+  while (len > 0) out_char(out, reversed[--len]);
+}
+
+static unsigned long long pow10_u(unsigned int exponent) {
+  unsigned long long result = 1;
+  while (exponent-- > 0) result *= 10ULL;
+  return result;
+}
+
+static void out_double(struct output *out, double value,
+                           unsigned int precision) {
+  if (value != value) {
+    out_data(out, "nan", 3);
+    return;
+  }
+  if (value > 1.7976931348623157e308) {
+    out_data(out, "inf", 3);
+    return;
+  }
+  if (value < -1.7976931348623157e308) {
+    out_data(out, "-inf", 4);
+    return;
+  }
+  if (value < 0.0) {
+    out_char(out, '-');
+    value = -value;
+  }
+  if (value == 0.0) {
+    out_char(out, '0');
+    return;
+  }
+  double integer = 0.0;
+  if (modf(value, &integer) == 0.0 &&
+      integer <= 9007199254740991.0) {
+    out_unsigned(out, (unsigned long long) integer, 10);
+    return;
+  }
+  if (precision == 0) precision = 1;
+  if (precision > 17) precision = 17;
+
+  int exponent = 0;
+  double normalized = value;
+  while (normalized >= 10.0) normalized *= 0.1, exponent++;
+  while (normalized < 1.0) normalized *= 10.0, exponent--;
+
+  unsigned long long scale = pow10_u(precision - 1U);
+  unsigned long long digits =
+      (unsigned long long) (normalized * (double) scale + 0.5);
+  if (digits >= scale * 10ULL) digits /= 10ULL, exponent++;
+
+  char text[18];
+  for (unsigned int i = 0; i < precision; i++) {
+    text[precision - i - 1U] = (char) ('0' + digits % 10ULL);
+    digits /= 10ULL;
+  }
+  size_t significant = precision;
+  while (significant > 1 && text[significant - 1] == '0') significant--;
+
+  if (exponent < -4 || exponent >= (int) precision) {
+    out_char(out, text[0]);
+    if (significant > 1) {
+      out_char(out, '.');
+      out_data(out, text + 1, significant - 1);
+    }
+    out_char(out, 'e');
+    if (exponent < 0) {
+      out_char(out, '-');
+      exponent = -exponent;
+    } else {
+      out_char(out, '+');
+    }
+    if (exponent < 10) out_char(out, '0');
+    out_unsigned(out, (unsigned long long) exponent, 10);
+  } else if (exponent >= 0) {
+    size_t integer_digits = (size_t) exponent + 1U;
+    for (size_t i = 0; i < integer_digits; i++)
+      out_char(out, i < significant ? text[i] : '0');
+    if (significant > integer_digits) {
+      out_char(out, '.');
+      out_data(out, text + integer_digits, significant - integer_digits);
+    }
+  } else {
+    out_data(out, "0.", 2);
+    for (int i = -1; i > exponent; i--) out_char(out, '0');
+    out_data(out, text, significant);
+  }
+}
+
+int vsnprintf(char *dst, size_t size, const char *format, __builtin_va_list ap) {
+  struct output out = {dst, size, 0};
+  while (*format != '\0') {
+    if (*format != '%') {
+      out_char(&out, *format++);
+      continue;
+    }
+    format++;
+    if (*format == '%') {
+      out_char(&out, *format++);
+      continue;
+    }
+
+    int precision = -1;
+    if (*format == '.') {
+      format++;
+      if (*format == '*') {
+        precision = __builtin_va_arg(ap, int);
+        format++;
+      } else {
+        precision = 0;
+        while (digit(*format))
+          precision = precision * 10 + (*format++ - '0');
+      }
+    }
+    int is_long = *format == 'l';
+    if (is_long) format++;
+    char conversion = *format == '\0' ? '\0' : *format++;
+
+    if (conversion == 's') {
+      const char *str = __builtin_va_arg(ap, const char *);
+      size_t len = strlen(str);
+      if (precision >= 0 && (size_t) precision < len) len = (size_t) precision;
+      out_data(&out, str == NULL ? "(null)" : str,
+                   str == NULL ? 6U : len);
+    } else if (conversion == 'd') {
+      long value = is_long ? __builtin_va_arg(ap, long) : (long) __builtin_va_arg(ap, int);
+      if (value < 0) {
+        out_char(&out, '-');
+        out_unsigned(&out, 0ULL - (unsigned long long) value, 10);
+      } else {
+        out_unsigned(&out, (unsigned long long) value, 10);
+      }
+    } else if (conversion == 'u' || conversion == 'x') {
+      unsigned long value =
+          is_long ? __builtin_va_arg(ap, unsigned long)
+                  : (unsigned long) __builtin_va_arg(ap, unsigned int);
+      out_unsigned(&out, (unsigned long long) value,
+                       conversion == 'x' ? 16U : 10U);
+    } else if (conversion == 'g') {
+      out_double(&out, __builtin_va_arg(ap, double),
+                     precision < 0 ? 6U : (unsigned int) precision);
+    } else {
+      out_char(&out, '%');
+      if (conversion != '\0') out_char(&out, conversion);
+    }
+  }
+  if (size > 0) dst[out.used < size ? out.used : size - 1U] = '\0';
+  return out.used > 2147483647U ? 2147483647 : (int) out.used;
+}
+
+int snprintf(char *dst, size_t size, const char *format, ...) {
+  __builtin_va_list ap;
+  __builtin_va_start(ap, format);
+  int result = vsnprintf(dst, size, format, ap);
+  __builtin_va_end(ap);
+  return result;
+}
+
+void heap_init(void *memory, size_t size) {
+  size_t header = ELK_ALIGN_UP(sizeof(struct heap_block));
+  s_heap = NULL;
+  if (memory == NULL || size <= header) return;
+  size_t address = (size_t) memory;
+  size_t aligned = ELK_ALIGN_UP(address);
+  if (aligned - address >= size || size - (aligned - address) <= header) return;
+  size -= aligned - address;
+  s_heap = (struct heap_block *) aligned;
+  s_heap->size = size - header;
+  s_heap->next = NULL;
+  s_heap->free = 1;
+}
+
+static void heap_merge(void) {
+  struct heap_block *block = s_heap;
+  size_t header = ELK_ALIGN_UP(sizeof(struct heap_block));
+  while (block != NULL && block->next != NULL) {
+    unsigned char *end =
+        (unsigned char *) block + header + block->size;
+    if (block->free && block->next->free &&
+        end == (unsigned char *) block->next) {
+      block->size += header + block->next->size;
+      block->next = block->next->next;
+    } else {
+      block = block->next;
+    }
+  }
+}
+
+void *malloc(size_t size) {
+  size_t header = ELK_ALIGN_UP(sizeof(struct heap_block));
+  size = ELK_ALIGN_UP(size);
+  if (size == 0) return NULL;
+  for (struct heap_block *block = s_heap; block != NULL;
+       block = block->next) {
+    if (!block->free || block->size < size) continue;
+    if (block->size >= size + header + ELK_ALIGN) {
+      struct heap_block *split =
+          (struct heap_block *) ((unsigned char *) block + header + size);
+      split->size = block->size - size - header;
+      split->next = block->next;
+      split->free = 1;
+      block->next = split;
+      block->size = size;
+    }
+    block->free = 0;
+    return (unsigned char *) block + header;
+  }
+  return NULL;
+}
+
+void free(void *ptr) {
+  if (ptr == NULL) return;
+  size_t header = ELK_ALIGN_UP(sizeof(struct heap_block));
+  struct heap_block *block =
+      (struct heap_block *) ((unsigned char *) ptr - header);
+  for (struct heap_block *it = s_heap; it != NULL; it = it->next) {
+    if (it == block) {
+      it->free = 1;
+      heap_merge();
+      return;
+    }
+  }
+}
+
+size_t heap_available(void) {
+  size_t available = 0;
+  for (struct heap_block *block = s_heap; block != NULL;
+       block = block->next)
+    if (block->free) available += block->size;
+  return available;
+}
+
+void printf(const char *fmt, ...) {
+  __builtin_va_list ap;
+  __builtin_va_start(ap, fmt);
+  while (*fmt) {
+    if (*fmt != '%') { putchar(*fmt++); continue; }
+    fmt++;
+    char pad = *fmt == '0' ? *fmt++ : ' ';
+    int width = 0;
+    if (*fmt == '*') width = __builtin_va_arg(ap, int), fmt++;
+    else while (*fmt >= '0' && *fmt <= '9') width = width * 10 + *fmt++ - '0';
+    if (*fmt == 's') {
+      char *s = __builtin_va_arg(ap, char *);
+      int len = 0;
+      while (s[len]) len++;
+      while (len < width) putchar(pad), width--;
+      while (*s) putchar(*s++);
+    } else if (*fmt == 'c') {
+      putchar(__builtin_va_arg(ap, int));
+    } else if (*fmt == 'd' || *fmt == 'x' || *fmt == 'X') {
+      unsigned x;
+      char buf[16];
+      int i = 0, base = *fmt == 'd' ? 10 : 16;
+      const char *digits = *fmt == 'X' ? "0123456789ABCDEF" : "0123456789abcdef";
+      if (*fmt == 'd') {
+        int n = __builtin_va_arg(ap, int);
+        if (n < 0) putchar('-'), n = -n, width--;
+        x = (unsigned) n;
+      } else {
+        x = __builtin_va_arg(ap, unsigned);
+      }
+      do buf[i++] = digits[x % (unsigned) base], x /= (unsigned) base; while (x);
+      while (i < width) putchar(pad), width--;
+      while (i--) putchar(buf[i]);
+    } else {
+      if (*fmt != '%') putchar('%');
+      putchar(*fmt);
+    }
+    fmt++;
+  }
+  __builtin_va_end(ap);
+}
+```
+
+今回、自作のlibcで実装している標準関数は以下のとおりです。
 
 - `memcpy`
 - `memset`
@@ -422,30 +958,109 @@ Gitへ保存します。
 
 ```bash
 git add libc.h libc.c main.c
-git commit -m "step2: add small C library"
+git commit -m "step2: add C library"
 ```
 
 ## 演習3 ElkでJavaScriptを動かす
 
 ### 必要なファイルを追加する
 
-次のファイルをリポジトリから作業フォルダへ保存します。
-
-- [miniregex.h](https://github.com/takesako/91os/blob/main/miniregex.h)
-- [miniregex.c](https://github.com/takesako/91os/blob/main/miniregex.c)
-- [elk.h](https://github.com/takesako/91os/blob/main/elk.h)
-- [elk.c](https://github.com/takesako/91os/blob/main/elk.c)
-
-VS Codeで各ファイルを作ります。
+正規表現の実装を作るため、`miniregex.h` ファイルを作成します。
 
 ```bash
 code miniregex.h
-code miniregex.c
-code elk.h
-code elk.c
 ```
 
-`elk.c` は、Cesanta Softwareによる小型JavaScript処理系Elkにいくつかの拡張機能を追加したものになっています。
+以下の宣言を書きます。
+
+```c
+#include "libc.h"
+int miniregex_match(const char *pattern, size_t pattern_len,
+                    const char *text, size_t text_len, int anchored,
+                    size_t *start, size_t *length);
+```
+
+次に`elk.h` ファイルを作成します。
+
+```bash
+code elk.h
+```
+
+ElkでJavaScriptをするために以下の内容を書きます。
+
+```c
+// Copyright (c) 2013-2022 Cesanta Software Limited
+// All rights reserved
+//
+// This software is dual-licensed: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3 as
+// published by the Free Software Foundation. For the terms of this
+// license, see http://www.fsf.org/licensing/licenses/agpl-3.0.html
+//
+// You are free to use this software under the terms of the GNU General
+// Public License, but WITHOUT ANY WARRANTY; without even the implied
+// warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU General Public License for more details.
+//
+// Alternatively, you can license this software under a commercial
+// license, please contact us at https://cesanta.com/contact.html
+
+#define JS_VERSION "3.0.0"
+#pragma once
+
+struct js;                 // JS engine (opaque)
+typedef uint64_t jsval_t;  // JS value
+
+struct js *js_create(void *buf, size_t len);         // Create JS instance
+jsval_t js_eval(struct js *, const char *, size_t);  // Execute JS code
+jsval_t js_glob(struct js *);                        // Return global object
+const char *js_str(struct js *, jsval_t val);        // Stringify JS value
+bool js_chkargs(jsval_t *, int, const char *);       // Check args validity
+bool js_truthy(struct js *, jsval_t);                // Check if value is true
+void js_setmaxcss(struct js *, size_t);              // Set max C stack size
+void js_setgct(struct js *, size_t);                 // Set GC trigger threshold
+void js_stats(struct js *, size_t *total, size_t *min, size_t *cstacksize);
+void js_dump(struct js *);  // Print debug info. Requires -DJS_DUMP
+
+// Create JS values from C values
+jsval_t js_mkundef(void);  // Create undefined
+jsval_t js_mknull(void);   // Create null, null, true, false
+jsval_t js_mktrue(void);   // Create true
+jsval_t js_mkfalse(void);  // Create false
+jsval_t js_mkstr(struct js *, const void *, size_t);           // Create string
+jsval_t js_mknum(double);                                      // Create number
+jsval_t js_mkerr(struct js *js, const char *fmt, ...);         // Create error
+jsval_t js_mkfun(jsval_t (*fn)(struct js *, jsval_t *, int));  // Create func
+jsval_t js_mkobj(struct js *);                                 // Create object
+void js_set(struct js *, jsval_t, const char *, jsval_t);      // Set obj attr
+
+// Extract C values from JS values
+enum { JS_UNDEF, JS_NULL, JS_TRUE, JS_FALSE, JS_STR, JS_NUM, JS_ERR, JS_PRIV };
+int js_type(jsval_t val);       // Return JS value type
+double js_getnum(jsval_t val);  // Get number
+int js_getbool(jsval_t val);    // Get boolean, 0 or 1
+char *js_getstr(struct js *js, jsval_t val, size_t *len);  // Get string
+```
+
+そして、`miniregex.c` ファイルを作ります。
+
+```bash
+code miniregex.c
+```
+
+かなり長いファイルなので、次のリポジトリから中身をコピーしてください。
+
+- [miniregex.c](https://github.com/takesako/91os/blob/main/miniregex.c)
+
+最後に、`elk.c` ファイルを作ります。
+
+`` ファイルの実体を書きます。
+
+これもかなり長いファイルなので、次のリポジトリから中身をコピーしてください。
+
+- [elk.c](https://github.com/takesako/91os/blob/main/elk.c)
+
+`elk.c` は、Cesanta Softwareによる小型JavaScript処理系Elkに対して、竹迫がいくつかの拡張機能を追加したものになっています。
 
 ### `run.sh` を変更する
 
@@ -563,7 +1178,7 @@ Hello from Elk
 
 このプロジェクトのElkは、標準JavaScriptの全機能を実装しているわけではありません。
 
-対応するJavaScriptの構文と制限事項は、次の仕様書を確認してください。
+サポートするJavaScriptの構文と制限事項は、次の仕様書を確認してください。
 
 [JavaScript.md](https://github.com/takesako/91os/blob/main/JavaScript.md)
 
@@ -571,7 +1186,7 @@ Hello from Elk
 
 ```bash
 git add .
-git commit -m "step3: run JavaScript with Elk"
+git commit -m "step3: run JavaScript"
 ```
 
 ## 演習4 Gengo処理系を動かす
@@ -771,7 +1386,7 @@ Gengoの構文、演算子、配列、条件分岐、繰り返し、制限事項
 
 ```bash
 git add .
-git commit -m "step4: execute shell.gengo"
+git commit -m "step4: shell.gengo"
 ```
 
 ## 演習5 Gengo REPLを作る
@@ -792,9 +1407,135 @@ Loop
   次の入力へ戻る
 ```
 
-完成版のREPLは `main.c` に実装されています。
+ファイル `main.c` を編集します。
 
-[main.c](https://github.com/takesako/91os/blob/main/main.c)
+```bash
+open main.c
+```
+
+以下の内容にコードを置き換えます。
+
+```c
+#include "stdio.h"
+#include "libc.h"
+#include "elk.h"
+#include "gengo.h"
+#include "shell.h"
+
+static jsval_t js_print(struct js *js,jsval_t *args,int nargs){
+  for(int i=0;i<nargs;i++){
+    if(i)putchar(' ');
+    if(js_type(args[i])==JS_STR){
+      size_t len;
+      char *str=js_getstr(js,args[i],&len);
+      for(size_t j=0;j<len;j++)putchar(str[j]);
+    }else{
+      const char *str=js_str(js,args[i]);
+      while(*str)putchar(*str++);
+    }
+  }
+  putchar('\n');
+  return js_mkundef();
+}
+
+static jsval_t js_getchar(struct js *js,jsval_t *args,int nargs){
+  (void)args;
+  return nargs?js_mkerr(js,"getchar expects 0 args"):js_mknum(getchar());
+}
+
+static jsval_t js_getchar_nonblock(struct js *js,jsval_t *args,int nargs){
+  (void)args;
+  return nargs?js_mkerr(js,"getchar_nonblock expects 0 args")
+              :js_mknum(getchar_nonblock());
+}
+
+static jsval_t js_putchar(struct js *js,jsval_t *args,int nargs){
+  if(!js_chkargs(args,nargs,"d"))
+    return js_mkerr(js,"putchar expects 1 number");
+  putchar((char)js_getnum(args[0]));
+  return js_mkundef();
+}
+
+static jsval_t js_msleep(struct js *js,jsval_t *args,int nargs){
+  if(!js_chkargs(args,nargs,"d"))
+    return js_mkerr(js,"msleep expects 1 number");
+  msleep((int)js_getnum(args[0]));
+  return js_mkundef();
+}
+
+static jsval_t js_exit(struct js *js,jsval_t *args,int nargs){
+  (void)args;
+  if(nargs)return js_mkerr(js,"exit expects 0 args");
+  exit(0);
+  return js_mkundef();
+}
+
+static int input(char *source,int size){
+  int ch,len=0;
+  printf("> ");
+
+  while((ch=getchar())!='\r'&&ch!='\n'){
+    if((ch==8||ch==127)&&len)
+      printf("\b \b"),len--;
+    else if(ch>=32&&ch<127&&len<size-1)
+      source[len++]=(char)ch,putchar((char)ch);
+  }
+
+  putchar('\n');
+  source[len]=0;
+  return len;
+}
+
+void main(void){
+  static unsigned char memory[16*1024*1024],heap[1024*1024];
+  char source[256*1024];
+
+  heap_init(heap,sizeof(heap));
+  struct js *js=js_create(memory,sizeof(memory));
+
+#define SET(name,function) js_set(js,js_glob(js),name,js_mkfun(function))
+  SET("print",js_print);
+  SET("getchar",js_getchar);
+  SET("getchar_nonblock",js_getchar_nonblock);
+  SET("putchar",js_putchar);
+  SET("msleep",js_msleep);
+  SET("exit",js_exit);
+#undef SET
+
+  jsval_t result=js_eval(js,(char *)gengo_js,gengo_js_len);
+
+  if(js_type(result)==JS_ERR){
+    printf("%s\n",js_str(js,result));
+    exit(1);
+  }
+
+  js_set(js,js_glob(js),"source",
+         js_mkstr(js,(char *)shell_gengo,shell_gengo_len));
+
+  result=js_eval(js,"program(source);",~0U);
+
+  if(js_type(result)==JS_ERR){
+    printf("%s\n",js_str(js,result));
+    exit(1);
+  }
+
+  printf("\nGengo lang REPL (try 1+2, type exit to quit)\n");
+
+  for(;;){
+    int len=input(source,sizeof(source));
+    if(!len)continue;
+
+    if(len==4&&!memcmp(source,"exit",4))
+      js_exit(js,0,0);
+
+    js_set(js,js_glob(js),"source",js_mkstr(js,source,len));
+    result=js_eval(js,"program(source);",~0U);
+
+    if(js_type(result)==JS_ERR)
+      printf("%s\n",js_str(js,result));
+  }
+}
+```
 
 主な処理は次のとおりです。
 
@@ -871,7 +1612,7 @@ i = 0; while (i < 3) { print i; i = i + 1; }
 
 ```bash
 git add .
-git commit -m "step5: add Gengo REPL"
+git commit -m "step5: Gengo REPL"
 ```
 
 ## ミニプロジェクト
@@ -1149,7 +1890,7 @@ ls gengo.h shell.h
 i = 0; while (i < 3) { print i; i = i + 1; }
 ```
 
-## 理解確認
+## 理解度確認テスト
 
 ### 問1
 
@@ -1171,7 +1912,7 @@ i = 0; while (i < 3) { print i; i = i + 1; }
 
 REPLへ入力したGengoコードは、最終的にどのJavaScript関数へ渡されますか。
 
-## 解答例
+## 解答（例）
 
 問1は、`main.c` の `printf`、`libc.c` の `printf`、`kernel.c` の `putchar`、OpenSBI、QEMU、macOSターミナルの順です。
 
