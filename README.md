@@ -206,11 +206,12 @@ code libc.h
 #define LIBC_H
 
 typedef __SIZE_TYPE__ size_t;
+int printf(const char *format, ...);
 
 #endif
 ```
 
-この段階では、`size_t` だけを用意します。
+この段階では、`size_t` と `printf` だけを用意します。
 
 ### 最小の `libc.c`
 
@@ -221,7 +222,7 @@ code libc.c
 次を保存します。
 
 ```c
-#include "stdio.h"
+#include "libc.h"
 
 int printf(const char *format, ...) {
     int count = 0;
@@ -249,7 +250,7 @@ code main.c
 次を保存します。
 
 ```c
-#include "stdio.h"
+#include "libc.h"
 
 void main(void) {
     printf("Hello my OS!\n");
@@ -271,25 +272,11 @@ set -xue
 QEMU=qemu-system-riscv64
 CC="$(brew --prefix llvm)/bin/clang"
 
-CFLAGS='-std=c11 -O2 -g3 -Wall -Wextra \
---target=riscv64-unknown-elf \
--march=rv64imafd -mabi=lp64d -mcmodel=medany \
--fuse-ld=lld -fno-stack-protector \
--ffreestanding -nostdlib'
+CFLAGS='-std=c11 -O2 -g3 -Wall -Wextra --target=riscv64-unknown-elf -march=rv64imafd -mabi=lp64d -mcmodel=medany -fuse-ld=lld -fno-stack-protector -ffreestanding -nostdlib'
 
-$CC $CFLAGS \
--Wl,-Tboot.ld \
--Wl,-Map=os.map \
--o os.elf \
-kernel.c libc.c main.c
+$CC $CFLAGS -Wl,-Tboot.ld -Wl,-Map=os.map -o os.elf kernel.c libc.c main.c
 
-$QEMU \
--machine virt \
--bios default \
--nographic \
--serial mon:stdio \
---no-reboot \
--kernel os.elf
+$QEMU -machine virt -bios default -nographic -serial mon:stdio --no-reboot -kernel os.elf
 ```
 
 実行権限を付けます。
@@ -326,7 +313,7 @@ flowchart LR
 `main.c` を次のように変更します。
 
 ```c
-#include "stdio.h"
+#include "libc.h"
 
 void main(void) {
     printf("1 + 2 = %d\n", 3);
@@ -935,7 +922,7 @@ void printf(const char *fmt, ...) {
 `main.c` を次のように変更します。
 
 ```c
-#include "stdio.h"
+#include "libc.h"
 
 void main(void) {
     printf("1 + 2 = %d\n", 3);
@@ -958,7 +945,7 @@ Gitへ保存します。
 
 ```bash
 git add libc.h libc.c main.c
-git commit -m "step2: add C library"
+git commit -m "step2: C library"
 ```
 
 ## 演習3 ElkでJavaScriptを動かす
@@ -1067,11 +1054,7 @@ code miniregex.c
 コンパイル対象へ `miniregex.c` と `elk.c` を追加します。
 
 ```bash
-$CC $CFLAGS \
--Wl,-Tboot.ld \
--Wl,-Map=os.map \
--o os.elf \
-kernel.c libc.c miniregex.c elk.c main.c
+$CC $CFLAGS -Wl,-Tboot.ld -Wl,-Map=os.map -o os.elf kernel.c libc.c miniregex.c elk.c main.c
 ```
 
 ### JavaScriptを評価する
@@ -1186,7 +1169,7 @@ Hello from Elk
 
 ```bash
 git add .
-git commit -m "step3: run JavaScript"
+git commit -m "step3: JavaScript"
 ```
 
 ## 演習4 Gengo処理系を動かす
