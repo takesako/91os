@@ -1282,6 +1282,13 @@ static jsval_t js_print(struct js *js,jsval_t *args,int nargs){
   return js_mkundef();
 }
 
+static jsval_t js_exit(struct js *js,jsval_t *args,int nargs){
+  (void)args;
+  if(nargs)return js_mkerr(js,"exit expects 0 args");
+  exit(0);
+  return js_mkundef();
+}
+
 static int input(char *source,int size){
   int ch,len=0;
   printf("> ");
