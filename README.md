@@ -1795,13 +1795,19 @@ git push -u origin main
 git push
 ```
 
-すでに `origin` が登録されている場合は、URLを変更します。
-
-```bash
-git remote set-url origin https://github.com/USERNAME/91os.git
-```
-
 ## トラブルシューティング
+
+### `git push: remote: Repository not found.`
+
+指定したGitHubリポジトリが作成されていないとgit push時にエラーになります。
+
+以下のURLにアクセスしてGitHubリポジトリを新規作成します。
+
+https://github.com/new
+
+- Repository name： `91os` を入力
+- そのほかはデフォルトのままでok
+- Create repositoryをクリック
 
 ### `brew: command not found`
 
@@ -1879,6 +1885,16 @@ ls gengo.h shell.h
 ```text
 i = 0; while (i < 3) { print i; i = i + 1; }
 ```
+
+### 長いgengoプログラムを動かすと途中でERROR停止する
+
+`main.c` の以下のメモリのサイズを増やしてください。
+
+```
+static unsigned char memory[16*1024*1024],heap[1024*1024];
+```
+
+実行中にメモリが足りなくなるとERRORで途中停止します。
 
 ## 理解度確認テスト
 
